@@ -1,0 +1,1 @@
+{"is_jetson": false, "is_sequential": true, "S": 64, "H": 12, "D_h": 64, "N_tokens": 1024, "mean_latency_per_token": 2.2371650629793294e-05, "mean_power_per_token": 0.0048959990963339806, "mean_energy_per_token": 0.007178261876106262}

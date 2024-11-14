@@ -1,0 +1,8 @@
+is_jetson: True
+is_sequential: True
+S: 1
+H: 12
+D_h: 64
+N_tokens: tensor([1024])
+mean_latency_per_token_per_head: tensor([4.1520e-05])
+mean_energy_per_token_per_head: tensor([3.0474e-07])

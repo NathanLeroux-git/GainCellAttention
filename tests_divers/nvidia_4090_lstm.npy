@@ -1,0 +1,8 @@
+is_jetson: False
+lstm_model: True
+S: 4
+H: 12
+D_h: 64
+N_tokens: 1024
+mean_latency_per_token_per_head: tensor([1.5901e-05])
+mean_energy_per_token_per_head: tensor([0.0032])
