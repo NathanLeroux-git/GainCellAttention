@@ -1,6 +1,5 @@
 
 ## openwebtext dataset
-test commit 22
 
 after running `prepare.py` (preprocess) we get:
 
