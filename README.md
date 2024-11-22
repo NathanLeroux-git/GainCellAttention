@@ -20,10 +20,12 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 pip install -r requirements.txt
 
 ### run training example on a tiny Shakespeare texts dataset
-First need to run the command python datasets/texts/shakespeare/prepare.py to prepare the tokenized text, and then run with: \
+First need to run the command: \
+python datasets/texts/shakespeare/prepare.py to prepare the tokenized text, and then run with: \
 python -m main_gpt ./configs/experiments/gpt-text/finetune_shakespeare.py --wandb_log=False --wandb_offline=False
 
 
 ### run training on OpenWebText
-First need to run the command python datasets/texts/openwebtext/prepare.py to prepare the tokenized text \
+First need to run the command: \
+python datasets/texts/openwebtext/prepare.py to prepare the tokenized text \
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_lineardram_gpt2.py --wandb_log=True --wandb_offline=False
