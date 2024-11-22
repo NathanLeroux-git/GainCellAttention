@@ -21,7 +21,9 @@ pip install -r requirements.txt
 
 ### Preparing the datasets
 python datasets/texts/shakespeare/prepare.py \
-python datasets/texts/openwebtext/prepare.py \
+python datasets/texts/openwebtext/prepare.py
+
+## Training the models
 
 ### run training example on a tiny Shakespeare texts dataset
 python -m main_gpt ./configs/experiments/gpt-text/finetune_shakespeare.py --wandb_log=False --wandb_offline=False
@@ -31,7 +33,7 @@ Distributed run with 4 GPUs on 3000 iterations to train the intermediate gain ce
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_lineardram_gpt2.py --wandb_log=True --wandb_offline=False --init_from='gpt2' --stop_saving_after=3000. --max_iters=3001 --out_dir='../saved_models/checkpoints/gpt2_LinearDRAMAttention'
 
 ### fine-tuning the final model
-after training the intermediate model, needs to change the saved model name to ../saved_models/gpt2-LinearDRAMAttention.pt. For instance: \
+After training the intermediate model, we need to change the saved model name to ../saved_models/gpt2-LinearDRAMAttention.pt. For instance: \
 cp ../saved_models/checkpoints/gpt2_LinearDRAMAttention/ckpt.pt ../saved_models/gpt2-LinearDRAMAttention.pt
 
 Finally, we can fine-tune the intermediate model on the final gain cells model: \
