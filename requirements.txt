@@ -3,7 +3,7 @@ datasets>=3.1
 tiktoken>=0.8
 pynvml>=11.5
 jsons>=1.6
-
+wandb>=0.18
 # numpy==1.23.1
 # pandas==1.4.3
 # scipy==1.9.0
