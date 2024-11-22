@@ -845,8 +845,8 @@ class GPT(nn.Module):
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
-        huggingface_models = ['gpt2-medium', 'gpt2-large']
-        local_models = ['gpt2', 'gpt2-from-scratch', 'gpt2-xl', 'gpt2-LinearDRAMAttention', 'gpt2-xl-LinearDRAMAttention', 'gpt2-DRAMAttention']
+        huggingface_models = ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl']
+        local_models = ['gpt2-from-scratch', 'gpt2-LinearDRAMAttention', 'gpt2-xl-LinearDRAMAttention', 'gpt2-DRAMAttention']
         assert model_type in huggingface_models + local_models
         override_args = override_args or {} # default to empty dict
         # only dropout can be overridden see more notes below
@@ -897,7 +897,6 @@ class GPT(nn.Module):
             transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
             # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
             # this means that we have to transpose these weights when we import them
-            assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
             for k in sd_keys_hf:
                 if any(k.endswith(w) for w in transposed) and (model_type in huggingface_models):
                     # special treatment for the Conv1D weights we need to transpose

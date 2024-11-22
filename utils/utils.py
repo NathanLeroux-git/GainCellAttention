@@ -123,7 +123,7 @@ def get_wandb_run_local(path):
     return summary, config
     
 def save_wand_run_local(group, sub, svs):
-    entity = "nleroux"
+    entity = "user"
     project = "sEMG_DOA_regression_start_05_01_23"  
     api = wandb.Api(overrides={
         "project": project,       
@@ -149,7 +149,7 @@ def save_wand_run_local(group, sub, svs):
     return path
 
 def change_group_name(group_name, new_group_name):
-    entity = "nleroux"
+    entity = "user"
     project = "dRAM_CAM"  
     api = wandb.Api(overrides={
                     "project": project,       

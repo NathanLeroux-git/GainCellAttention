@@ -1,7 +1,8 @@
 transformers>=4.46
 datasets>=3.1
 tiktoken>=0.8
-
+pynvml>=11.5
+jsons>=1.6
 
 # numpy==1.23.1
 # pandas==1.4.3

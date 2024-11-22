@@ -1,7 +1,7 @@
 import wandb
 import numpy as np
 
-entity = "nleroux"
+entity = "user"
 project = "sEMG_DOA_regression_start_05_01_23"
 
 def get_runs(group="", subjects_list=None, svs_list=None):

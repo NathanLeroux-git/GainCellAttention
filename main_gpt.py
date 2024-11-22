@@ -1,31 +1,4 @@
-"""
-This training script can be run both on a single gpu in debug mode,
-and also in a larger training run with distributed data parallel (ddp).
-
-To run on a single GPU, example:
-$ python train.py --batch_size=32 --compile=False
-
-To run with DDP on 4 gpus on 1 node, example:
-$ torchrun --standalone --nproc_per_node=4 train.py
-
-To run with DDP on 4 gpus across 2 nodes, example:
-- Run on the first (master) node with example IP 123.456.123.456:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=0 --master_addr=123.456.123.456 --master_port=1234 train.py
-- Run on the worker node:
-$ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123.456 --master_port=1234 train.py
-(If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
-"""
-
 import os
-
-# Check if inside a Conda environment
-conda_env = os.environ.get('CONDA_DEFAULT_ENV')
-if conda_env:
-    print("Conda environment:", conda_env)
-else:
-    print("Not in a Conda environment")
-
-
 import sys
 import time
 import math
@@ -35,11 +8,8 @@ from contextlib import nullcontext
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
-from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer
 
 from modules.model_gpt import GPTConfig, GPT
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
@@ -155,7 +125,7 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 if dataset=="openwebtext":
-    if os.path.exists('../datasets/texts/'):
+    if os.path.exists('./datasets/texts/'):
         data_dir = '../datasets/texts/'
     else:
         print("Data directory not found. Exiting...")
