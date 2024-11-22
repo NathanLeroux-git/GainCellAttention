@@ -8,8 +8,6 @@
 mkdir new_project \
 cd new_project \
 mkdir ./venv/ \
-mkdir ./datasets/ \
-mkdir ./datasets/texts/ \
 python -m venv ./venv/gpt2 \
 git clone https://github.com/NathanLeroux-git/GainCellAttention.git \
 cd GainCellAttention/ \
