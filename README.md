@@ -28,6 +28,7 @@ python -m main_gpt ./configs/experiments/gpt-text/finetune_shakespeare.py --wand
 ### run training on OpenWebText
 To prepare the tokenized text, first need to run the command: \
 python datasets/texts/openwebtext/prepare.py \
+
 Distributed run with 4 GPUs on 3000 iterations to train the intermediate gain cells model fine-tuned from gpt2:
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_lineardram_gpt2.py --wandb_log=True --wandb_offline=False --init_from='gpt2' --stop_saving_after=3000. --max_iters=3001 --out_dir='../saved_models/checkpoints/gpt2_LinearDRAMAttention' \
 
@@ -36,6 +37,3 @@ cp ../saved_models/checkpoints/gpt2_LinearDRAMAttention/ckpt.pt ../saved_models/
 
 Finally, we can fine-tune the intermediate model on the final gain cells model: \
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_dram_gpt2.py --wandb_log=True --wandb_offline=False --init_from='gpt2-LinearDRAMAttention' --stop_saving_after=13000. --max_iters=13001 --out_dir='../saved_models/checkpoints/gpt2_DRAMAttention' \
-
-
-
