@@ -1,34 +1,19 @@
 import matplotlib.pyplot as plt
 from matplotlib import rc, rcParams
-from matplotlib.ticker import AutoMinorLocator, MultipleLocator, FixedLocator, FormatStrFormatter
+from matplotlib.ticker import AutoMinorLocator, MultipleLocator, FixedLocator, FormatStrFormatter, LogFormatter, LogLocator, FuncFormatter, ScalarFormatter, NullFormatter
 import numpy as np
 import wandb
 import json
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from plot_NL_curves import return_ax_NL_fig
 
-data_filename = './utils/owt_training_results.json'
-
-entity = "nleroux"
+entity = "user"
 project = "owt"
 out_file_root = "./plots/"
-
-metrics_list = ["val/loss"]
-ylabel_list = ["Cross entropy loss"]
-# ylabel_list = ["Perplexity"]
-
+# rcParams['text.usetex'] = True
 font = {'size': 8}
 rc('font', **font)
-# change font
-# rcParams['font.sans-serif'] = "Arial"
-# rcParams['font.family'] = "sans-serif"
-# rcParams['text.usetex'] = True
 rcParams['mathtext.default'] = 'regular'  # Math subscripts and greek letters non-italic
-linewidth = 1.5
-markersize = 3
-centimeters = 1 / 2.54  # centimeters in inches  
-width = 15 * centimeters # 5.5
-height = 4 * centimeters  
-
-fig, ax = plt.subplots(1, 3, figsize=(width, height))
 
 def import_run(run_id):
     api = wandb.Api(overrides={
@@ -38,220 +23,289 @@ def import_run(run_id):
     run = api.run(entity+'/'+project+'/'+run_id)
     return run
 
-def plot_metrics_multi_run(apply=False,
+def plot_metrics_multi_run(
                            ax=None,
-                           save_plot=False,
-                           metrics="MAE (degrees) test",
-                           end=-1,
+                           data_dict={},
+                           metric="val/loss",
                            max_axis=1000,
-                           ylabel="Mean Absolute Error (°)",
                            runs=[],
-                           file_out="",
-                           from_wandb=False,
+                           perplexity=False,
+                           log_scale=False,
+                           yaxis_limit=None,
+                           moving_average_window=None,
+                           hide_labels=False,
+                           shade_lim=None,
+                           legend_on=False,
                            ):
-    if apply:
-        ax_idx = 1
-        # plot baseline
-        baseline_cel = 3.00 # trained ChatGPT2        
-        ax[ax_idx].plot(np.arange(max_axis), np.ones((max_axis))*baseline_cel, '--', c="black", linewidth=linewidth, label="Baseline: pre-trained\nsoftware GPT-2")
-        # baseline_ppl = np.exp(baseline_cel)
-        # ax[ax_idx].plot(np.arange(max_axis), np.ones((max_axis))*baseline_ppl, '--', c="black", linewidth=linewidth, label="Baseline")
-        
-        # steps = np.arange(0, end)
-        # iter = steps * 100
-        max_iter = 0
-        
-        metric = np.zeros((len(runs), end))
-        iter = np.zeros((len(runs), end))
-        
-        if from_wandb:
-            data_dict = {}
-        else:
-            with open(data_filename, 'r') as f:
-                data_dict = json.load(f)
-             
         for r, run in enumerate(runs):
-            if from_wandb:
-                run_history = import_run(run['id']).history
-                iter_iterrows, metric_iterrows = run_history(keys=['iter']).iterrows(), run_history(keys=[metrics]).iterrows()
-                for i, (idx, data) in enumerate(zip(iter_iterrows, metric_iterrows)):
-                    if i>=end:
-                        break
-                    print(f"iter {i}\t{metrics} = {data[1][metrics]:.4f}")
-                    iter[r, i] = idx[1]['iter']
-                    metric[r, i] = data[1][metrics]
-                    # metric[r, i] = np.exp(data[1][metrics])
-                    if idx[1]['iter'] >= max_axis:    
-                        break
+            name, label, color = run['name'], run['label'], run['color']
+            data = data_dict[name]
+            iterations, values = data['iterations'], data[metric]
+            # if name=="DRAM_surrogate_stop_13000_ft_from_gpt2-LinearDRAMAttention_tbs_1920_decay_factor_0.00016_stop3000":
+            #     iterations = np.array(iterations) + 3000
+            if perplexity:
+                values = np.exp(np.array(values))
+            if moving_average_window is not None:
+                values = np.convolve(values, np.ones(moving_average_window) / moving_average_window, mode='valid')
+                iterations = iterations[:len(values)]  
+            ax.plot(iterations, values, '-', c=color, linewidth=linewidth, label=label)
+            
+        # yaxis
+        if perplexity:
+            if yaxis_limit is not None:
+                ax.set_ylim(yaxis_limit)
+            if not(hide_labels):
+                ax.set_ylabel('Perplexity', fontsize=font['size'])  
+            if log_scale:
+                ax.set_yscale("log")         
+                y_major = LogLocator(base = 10) 
+                y_minor = LogLocator(base = 10, subs =np.arange(20, 40).tolist()) 
+                ax.yaxis.set_major_locator(y_major)
+                ax.yaxis.set_minor_locator(y_minor)            
+                ax.set_yticks([20, 30, 40])                 
+                ylabels = [f'{x:.0f}' for x in ax.get_yticks()]
+                ax.set_yticklabels(ylabels)
+                ax.yaxis.set_minor_formatter(NullFormatter())
             else:
-                data = data_dict[runs[r]['label']]
-                iter[r, :len(data['iterations'])] = data['iterations']
-                metric[r, :len(data[ylabel])] = data[ylabel]
-                i = len(data['iterations'])
-                
-            ax[ax_idx].plot(iter[r, :i], metric[r, :i], '-', c=runs[r]['color'], linewidth=linewidth, label=runs[r]['label'])
-            
-            if from_wandb:
-                data_dict.update({runs[r]['label']: {'iterations': iter[r, :i].tolist(), ylabel: metric[r, :i].tolist()}})
-                max_iter = max(max_iter, idx[1]['iter'])
-            else:            
-                max_iter = max(iter[r, :-1])
-
-            # ax[ax_idx].set_xlim([0,21])
-            # ax[ax_idx].legend(frameon=True, fontsize=font['size'])
-            ax[ax_idx].set_xlabel("Backpropagation iterations", fontsize=font['size'])
-            ax[ax_idx].set_ylabel(ylabel, fontsize=font['size'])
-            # ax[ax_idx].set_ylim([3, 4])
-            # ax[ax_idx].set_yscale("log")
-            # ax[ax_idx].set_xscale("log")
-            # ax[ax_idx].set_title(''.join(["end value: "]+[f"{metric_end[r]:.4f}, " for r in range(len(run_ids))]))
-            
-            ax[ax_idx].tick_params(axis="x", direction='in')
-            ax[ax_idx].tick_params(which="minor", direction='in')
-            ax[ax_idx].xaxis.set_minor_locator(AutoMinorLocator(5))
-            ax[ax_idx].xaxis.set_major_locator(MultipleLocator(2000))
-            ax[ax_idx].set_xticks([x for x in np.arange(0, min(max_iter, max_axis), 2000)])
-            xlabels = [f'{x:.0f}k' for x in ax[ax_idx].get_xticks()/1000]
-            xlabels[0] = '0'
-            ax[ax_idx].set_xticklabels(xlabels)
-            
-            ax[ax_idx].tick_params(axis="y", direction='in')
-            ax[ax_idx].tick_params(which="minor", direction='in')
-            ax[ax_idx].yaxis.set_minor_locator(AutoMinorLocator(5))
-            ax[ax_idx].yaxis.set_major_locator(MultipleLocator(2))
-
-            fig.tight_layout()
-            ax[ax_idx].xaxis.labelpad = 5
-            ax[ax_idx].yaxis.labelpad = 5
-            
-            if r == 3:
-                ax_idx += 1               
-                # plot baseline
-                baseline_cel = 3.00 # trained ChatGPT2        
-                ax[ax_idx].plot(np.arange(max_axis), np.ones((max_axis))*baseline_cel, '--', c="black", linewidth=linewidth, label="Baseline: pre-trained\nsoftware GPT-2")
-                
-        with open(data_filename, 'w') as f:
-            json.dump(data_dict, f, indent=4)
-
+                ax.xaxis.set_minor_locator(MultipleLocator(1000))
+                ax.yaxis.set_minor_locator(MultipleLocator(1))
+        else:            
+            if yaxis_limit is not None:
+                ax.set_ylim(yaxis_limit)
+            if not(hide_labels):
+                ax.set_ylabel('Cross entropy loss', fontsize=font['size'])
+            ax.tick_params(axis="y", direction='in')
+            ax.tick_params(which="minor", direction='in')
+            ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+            ax.yaxis.set_major_locator(MultipleLocator(2))
+        
+        # xaxis
+        ax.set_xlim([0, max_axis])
+        if shade_lim is not None:
+            ax.fill_between(np.arange(max_axis), shade_lim[0], shade_lim[1], alpha=0.1, color='black', lw=0) 
+        if legend_on:
+            ax.legend(frameon=True, fontsize=font['size'])
+        if not(hide_labels):
+            ax.set_xlabel("Backpropagation iterations", fontsize=font['size'])            
+        ax.tick_params(axis="x", direction='in')
+        ax.tick_params(which="minor", direction='in')
+        # ax.xaxis.set_minor_locator(AutoMinorLocator(5))
+        # ax.xaxis.set_major_locator(MultipleLocator(2000))
+        # ax.set_xticks([x for x in np.arange(0, max_axis, 2000)])
+        ax.set_xticks([x for x in np.arange(0, max_axis, 1000)])
+        ax.xaxis.set_major_locator(MultipleLocator(1000))
+        ax.set_xticks([x for x in np.arange(0, max_axis, 4000)])
+        xlabels = [f'{x:.0f}k' for x in ax.get_xticks()/1000]
+        xlabels[0] = '0'
+        ax.set_xticklabels(xlabels)
         return ax
         
-def plot_calibration(ax=None, save_plot=False, saved_calibration=np.array([0.]), end=100, file_out=None):
-    ax_idx = 0
-    max_iter = min(end, len(saved_calibration))
-    iters = np.arange(0, max_iter)
-    # saved_calibration = np.exp(saved_calibration)
-    ax[ax_idx].plot(iters, saved_calibration[:max_iter], '-o', c='darkgreen', linewidth=linewidth, ms=markersize, label="Nonlinear model")
-    ax[ax_idx].set_xlabel("Adaptation iterations", fontsize=font['size'])
-    ax[ax_idx].set_ylabel("Cross entropy loss", fontsize=font['size'])
-    # ax[ax_idx].set_ylabel("Perplexity", fontsize=font['size'])
-    ax[ax_idx].tick_params(axis="x", direction='in')
-    ax[ax_idx].tick_params(which="minor", direction='in')
-    ax[ax_idx].xaxis.set_minor_locator(AutoMinorLocator(1))
-    ax[ax_idx].xaxis.set_major_locator(MultipleLocator(2))
-    ax[ax_idx].tick_params(axis="y", direction='in')
-    ax[ax_idx].tick_params(which="minor", direction='in')
-    ax[ax_idx].yaxis.set_minor_locator(AutoMinorLocator(5))
-    ax[ax_idx].yaxis.set_major_locator(MultipleLocator(2))
-    # ax[ax_idx].set_yscale("log")
+def plot_calibration(ax=None,
+                     saved_calibration=np.array([0.]),
+                     experiment_names="all",
+                     perplexity=False,
+                     log_scale=True,
+                     labels=[],
+                     max_iter=100,
+                     yaxis_limit=None,
+                     colors=["blue"],
+                     legend_on=False,
+                     ):
     
+    for exp_id, (exp, label, color) in enumerate(zip(data_dict_calibration, labels, colors)):
+        if exp["name"] in experiment_names:
+            saved_calibration = exp['loss_tensor']
+            num_iters = min(max_iter, len(saved_calibration))
+            iters = np.arange(0, num_iters)
+            if perplexity:
+                saved_calibration = np.exp(np.array(saved_calibration))
+            ax.plot(iters, saved_calibration[:num_iters], '-o', linewidth=linewidth, ms=markersize, label=label, color=color) #, c='darkgreen'
+            
+    ax.set_xlabel("Adaptation iterations", fontsize=font['size'])
+    if perplexity:
+        ax.set_ylabel("Perplexity", fontsize=font['size'])
+    else:
+        ax.set_ylabel("Cross entropy loss", fontsize=font['size'])
+        ax.tick_params(axis="y", direction='in')
+        ax.tick_params(which="minor", direction='in')
+        # ax.yaxis.set_minor_locator(AutoMinorLocator(5))
+        # ax.yaxis.set_major_locator(MultipleLocator(2))
+        
+    if yaxis_limit is not None:
+        ax.set_ylim(yaxis_limit)
+    
+    ax.tick_params(axis="x", direction='in')
+    ax.tick_params(which="minor", direction='in')
+    ax.xaxis.set_minor_locator(AutoMinorLocator(1))
+    ax.xaxis.set_major_locator(MultipleLocator(8))
+    if log_scale:
+        ax.set_yscale("log")    
+        # formatter = LogFormatter(base=100, labelOnlyBase=False)
+        # ax.get_yaxis().set_major_formatter(formatter) 
+    
+    if legend_on:
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles[::-1], labels[::-1])  # Reverse the order
     return ax
 
-run_list = [
-            
-            # {
-            # "label": "GPT-2 trained from scratch",
-            #  "id": "nleroux/owt/nleroux/owt/tf6qb0s4",
-            #  "color": "darkmagenta",
-            #  "name": "gpt2-from-scratch",
-            #  },
-                
-            {"label": "Nonlinear model trained\nfrom scratch",
-             "id": "nleroux/owt/nleroux/owt/tijpdfhw",
+
+linewidth = 2
+markersize = 2
+centimeters = 1 / 2.54  # centimeters in inches  
+# width = 14 * centimeters
+# height = 5 * centimeters
+width = 12 * centimeters
+height = 4 * centimeters  
+
+legend_on = True
+
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(width, height))
+
+# ax0 = inset_axes(ax1, width=width/4 * 0.5, height=height/4)
+# ax0 = return_ax_NL_fig(ax0)
+# ax0.set_xticks([0, 0.45, 0.9])                 
+# xlabels = [f'{x:.1f}' for x in ax0.get_xticks()]
+## ax0.set_xticklabels(xlabels)
+
+# # Arxiv submission data
+# saved_calibration = np.array([ 8.6550, 13.8243,  5.1499,  3.8073,  3.1518,  3.1054,  3.1018,  3.1047,
+#          3.0987,  3.0997,  3.1004,  3.1003,  3.1003])
+# NCS 4_gpt2-DRAMAttention_adapted_from_LinearDRAMAttention_no_fine-tuning_bis.pt with decay factor improved -> LinearDRAMAttention trained on 13000 iterations
+data_filename_calibration = './tests_divers/calibration_dram_scaling_parameters_results_multi_functions.json'
+with open(data_filename_calibration, 'r') as f:
+    data_dict_calibration = json.load(f)
+data_dict_calibration = data_dict_calibration[1:]
+
+attentions = [
+              "DRAMAttention",
+            #   "NLAttention_x3",
+            #   "NLAttention_x5",
+            #   "NLAttention_sigmoid",
+            #   "NLAttention_exponential",
+              ]
+
+experiment_names = []
+for attention in attentions:
+    experiment_names += [f"{attention} no quant no decay adapted from gpt2-LinearDRAMAttention_tbs_1920_decay_factor_0.00016_stop13000_with_head_scaling.pt"]
+
+labels = ["Nonlinear model",
+          r'$x^3$',
+          r'$x^5$',
+          r"$Sigmoid$",
+          r"$Exponential$",
+          ]
+
+colors = ["darkgreen",
+          "",
+          "goldenrod",
+          "lightslategray",
+          "maroon",
+          ]
+
+data_dict_calibration.reverse()
+labels.reverse()
+colors.reverse()
+
+perplexity=True
+ax1 = plot_calibration(ax=ax1,
+                    saved_calibration=data_dict_calibration,
+                    experiment_names=experiment_names,
+                    perplexity=perplexity,
+                    log_scale=True,
+                    labels=labels,
+                    # yaxis_limit=[19, 10e+4],
+                    colors=colors,
+                    legend_on=legend_on,
+                    )
+
+run_list_1 = [ 
+            {"label": "Software model trained from scratch",
              "color": "black",
-             "name": "DRAM_ft_from_scratch_fixed_att_and_output_threshold_no_calib",
+             "name": "gpt2-from-scratch_stop13000_bs_20_grad_ac_96",
+              },    
+                         
+            {"label": "Nonlinear model trained from scratch",
+             "color": "darkmagenta",
+             "name": "DRAM_surrogate_stop_13000_ft_from_scratch",
              },
             
-            {"label": None,
-             "id": "nleroux/owt/kgzz0vr2",
-             "color": "black",
-             "name": "DRAM_ft_from_scratch_fixed_att_and_output_threshold_no_calib-2nd_part",
-             },
+            # {"label": "Nonlinear model\nfine-tuned from GPT-2",
+            #  "color": "brown",
+            #  "name": "DRAM_surrogate_stop_13000_ft_from_gpt2",
+            #  },         
             
-            {"label": "Nonlinear model\nfine-tuned from GPT-2",
-             "id": "nleroux/owt/0czn51nf",
-             "color": "brown",
-             "name": "DRAM_ft_from_gpt2_fixed_att_and_output_threshold_no_calib",
-             },
-            
-            {"label": None,
-             "id": "nleroux/owt/d782o1vw",
-             "color": "brown",
-             "name": "DRAM_ft_from_gpt2_fixed_att_and_output_threshold_no_calib-2nd_part",
-             },
-            
-            # {"label": "Quantized GPT-2",
-            #  "id": "nleroux/owt/d2bylvrx",
-            #  "color": "grey",
-            #  "name": "gpt2_quantized_32bits_output",
-            #  },
-            
-            {"label": "Linear model\nfine-tuned from GPT-2",
-             "id": "nleroux/owt/jn1qm4g9",
+            {"label": "Linear model fine-tuned from GPT-2",
              "color": "darkblue",
-             "name": "LinearDRAMAttention_tilling_output_pulse_fixed_threhshold_atten_80µA_wa_40µA_3000iters_32bits_out",
+             "name": "gpt2-LinearDRAMAttention_tbs_1920_decay_factor_0.00016_stop13000",
              },
             
-            {"label": None,
-             "id": "nleroux/owt/1oy54bt9",
-             "color": "darkblue",
-             "name": "LinearDRAMAttention_tilling_output_pulse_fixed_threhshold_atten_80µA_wa_40µA_3000iters_32bits_out",
-             },
-            
-            {"label": "Nonlinear model fine-tuned\nfrom linear model",
-             "id": "nleroux/owt/nh41m8mj",
+            {"label": "Nonlinear model fine-tuned from linear model",
              "color": "darkgreen",
-             "name": "DRAM_ft_from_LinearDRAMAttention_tilling_output_pulse_fixed_threhshold_atten_80µA_wa_40µA_2000iters_32bits_out",
-             },      
-            
-            {"label": None,
-             "id": "nleroux/owt/v5l6dacw",
-             "color": "darkgreen",
-             "name": "DRAM_ft_from_LinearDRAMAttention_tilling_output_pulse_fixed_threhshold_atten_80µA_wa_40µA_2000iters_32bits_out",
-             },           
+             "name": "DRAM_surrogate_stop_13000_ft_from_gpt2-LinearDRAMAttention_tbs_1920_decay_factor_0.00016_stop3000",
+             },  
             ]
 
-save_plot = True
-for met, ylabel in zip(metrics_list, ylabel_list):
-    ax = plot_metrics_multi_run(apply=True, 
-                ax=ax,
-                save_plot=save_plot,
-                metrics=met,
-                end=100,
-                max_axis=10001,
-                ylabel=ylabel,
-                runs=run_list,
-                file_out=out_file_root+"training_dram",
-                from_wandb=True,
-                )
-    
+data_filename = './utils/owt_training_results_ncs.json'
+with open(data_filename, 'r') as f:
+    data_dict = json.load(f)
 
-saved_calibration = np.array([ 8.6550, 13.8243,  5.1499,  3.8073,  3.1518,  3.1054,  3.1018,  3.1047,
-         3.0987,  3.0997,  3.1004,  3.1003,  3.1003])
+perplexity=True # if False, Cross entropy loss
+max_axis = 13001
+moving_average_window = 5
+yaxis_limit_inset = [20, 25]
 
-ax = plot_calibration(ax=ax,
-                 save_plot=save_plot,
-                 saved_calibration=saved_calibration,
-                 end=100,
-                 file_out=out_file_root+"figure_calibration")
+ax2 = plot_metrics_multi_run(
+            ax=ax2,
+            data_dict=data_dict,
+            max_axis=max_axis,
+            metric='val/loss',
+            runs=run_list_1,
+            perplexity=perplexity,
+            log_scale=False,
+            yaxis_limit=[19, 40],
+            moving_average_window=moving_average_window,
+            shade_lim=yaxis_limit_inset,
+            legend_on=legend_on,  
+            )
+
+# axins = inset_axes(ax2, width=width/4 * 2/3, height=height/4)
+axins = inset_axes(ax2, width=width/4 * 0.5, height=height/4 * 1.1)
+
+axins = plot_metrics_multi_run(
+            ax=axins,
+            data_dict=data_dict,
+            max_axis=max_axis,
+            metric='val/loss',
+            runs=run_list_1,
+            perplexity=perplexity,
+            log_scale=False,
+            yaxis_limit=yaxis_limit_inset,
+            moving_average_window=moving_average_window,
+            hide_labels=True,    
+            shade_lim=yaxis_limit_inset,   
+            legend_on=False,     
+            )
+
+# plot baseline
+baseline = 3.10 # trained ChatGPT2
+if perplexity:
+    baseline = np.exp(baseline)    
+for ax_ in [ax2]:
+    ax_.plot(np.arange(max_axis), np.ones((max_axis))*baseline, '--', c="black", linewidth=linewidth, label="Baseline: public software GPT-2")
+    # ax.fill_between(np.arange(max_axis), baseline-1.5, baseline+1.5, alpha=0.5, color='black') # 1.5 is the perplexity std
+    if legend_on:
+        ax_.legend()
 
 fig.tight_layout()
-for ax_single in ax:
+# for ax_single in [ax0, ax1, ax2]:
+for ax_single in [ax1, ax2]:
     ax_single.xaxis.labelpad = 5
     ax_single.yaxis.labelpad = 5
-    # ax_single.legend(frameon=True, fontsize=font['size'])
  
 file_out = './plots/combined_dram_training_results'
+if legend_on:
+    file_out += "_labels"
 for fmt in ['png', 'svg', 'pdf']:
-    plt.savefig(file_out + '.%s' % fmt, format=fmt, dpi=1200)  
+    plt.savefig(file_out + '.%s' % fmt, format=fmt, dpi=1200)
 
 plt.show()
