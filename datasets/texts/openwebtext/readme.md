@@ -1,6 +1,5 @@
 
 ## openwebtext dataset
-test
 
 after running `prepare.py` (preprocess) we get:
 
