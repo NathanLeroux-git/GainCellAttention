@@ -40,8 +40,6 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer
-from datasets import load_dataset
-# import tiktoken
 
 from modules.model_gpt import GPTConfig, GPT
 os.environ["TORCH_DISTRIBUTED_DEBUG"] = "INFO"
@@ -77,13 +75,6 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 wandb_group_name = 'tests'
 # data
 dataset = 'openwebtext'
-if os.path.exists('../datasets/texts/'):
-    data_dir = '../datasets/texts/'
-elif os.path.exists('/p/project1/neuroml/common/datasets'):
-    data_dir = '/p/project1/neuroml/common/datasets'
-else:
-    print("Data directory not found. Exiting...")
-    sys.exit(1)
     
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -164,81 +155,36 @@ ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torc
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
 if dataset=="openwebtext":
-    # poor man's data loader
-    data_dir = os.path.join(data_dir, dataset)
-    train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
-    val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    if os.path.exists('../datasets/texts/'):
+        data_dir = '../datasets/texts/'
+    else:
+        print("Data directory not found. Exiting...")
+        sys.exit(1)
+elif dataset=="shakespeare":
+    if os.path.exists('./datasets/texts/'):
+        data_dir = './datasets/texts/'
+    else:
+        print("Data directory not found. Exiting...")
+        sys.exit(1)
+else:
+    print("Data directory not found. Exiting...")
+    sys.exit(1)
 
-    def get_batch(split):
-        data = train_data if split == 'train' else val_data
-        ix = torch.randint(len(data) - block_size, (batch_size,))
-        x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
-        y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
-        if device_type == 'cuda':
-            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-            x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-        else:
-            x, y = x.to(device), y.to(device)
-        return x, y
-    
-elif dataset=="slimpajama":
-    # enc = tiktoken.get_encoding("gpt2")
-    tokenizer = AutoTokenizer.from_pretrained("gpt2")
-    print(f"Loading SlimPajama-627B dataset...")
-    ds = load_dataset("cerebras/SlimPajama-627B", num_proc=8)
-    train_data = ds['train']['text']
-    val_data = ds['validation']['text']
-    
-    class TextDataset(Dataset):
-        def __init__(self, texts, tokenizer, max_length=1024):
-            self.tokenizer = tokenizer
-            self.texts = texts
-            self.max_length = max_length
+data_dir = os.path.join(data_dir, dataset)
+train_data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
+val_data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
 
-        def __len__(self):
-            return len(self.texts)
-
-        def __getitem__(self, idx):
-            # Start with the current text
-            current_text = self.texts[idx]
-            tokens = self.tokenizer(current_text, return_tensors="pt")["input_ids"].squeeze(0)
-            tokens = self.tokenizer(current_text,
-                                    return_tensors="pt",
-                                    truncation=True,
-                                    max_length=self.max_length
-                                    )["input_ids"].squeeze(0)
-            
-            # Continue adding tokens from the next texts until we reach max_length
-            while tokens.size(0) < self.max_length:
-                idx = (idx + 1) % len(self.texts)  # Move to the next text (circular index)
-                next_tokens = self.tokenizer(self.texts[idx], return_tensors="pt")["input_ids"].squeeze(0)
-                tokens = torch.cat((tokens, next_tokens), dim=0)
-            
-            # Truncate to max_length
-            tokens = tokens[:self.max_length]
-            
-            # Create targets by shifting tokens to the right by one position
-            targets = tokens.clone()
-            targets[:-1] = tokens[1:]
-            targets[-1] = self.tokenizer.eos_token_id  # Assign EOS token or padding to the last token
-            
-            return tokens, targets
-        
-    train_set = TextDataset(train_data, tokenizer, max_length=block_size)
-    val_set = TextDataset(val_data, tokenizer, max_length=block_size)
-
-    train_dataloader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
-    val_dataloader = DataLoader(val_set, batch_size=batch_size, shuffle=True)
-    
-    def get_batch(split):
-        dataloader = train_dataloader if split == 'train' else val_dataloader
-        x, y = next(iter(dataloader))
-        if device_type == 'cuda':
-            # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
-            x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
-        else:
-            x, y = x.to(device), y.to(device)
-        return x, y
+def get_batch(split):
+    data = train_data if split == 'train' else val_data
+    ix = torch.randint(len(data) - block_size, (batch_size,))
+    x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
+    y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
+    if device_type == 'cuda':
+        # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+        x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+    else:
+        x, y = x.to(device), y.to(device)
+    return x, y
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
