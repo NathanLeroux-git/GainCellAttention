@@ -20,8 +20,8 @@ compile = True
 
 block_size = 1024
 
-batch_size = 12
-gradient_accumulation_steps = 120
+batch_size = 60
+gradient_accumulation_steps = 32
 
 # this makes total number of tokens be 300B
 max_iters = 600000

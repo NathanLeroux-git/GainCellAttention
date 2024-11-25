@@ -224,12 +224,14 @@ class LinearDRAMAttention(SlidingWindowAttention):
         self.NL = nn.Identity()
         self.mask_value_1 = 0.
         self.mask_value_2 = 0.
-        amp_coefficient_attn = 19.3
+        amp_coefficient_attn = 1.0
+        amp_coefficient_weight_average = 1.0
+        ssaturation_attn = 1.
+        ssaturation_weight_average = 0.5
         self.similarity = offset_weights_matmul_QK(offset_input=0.0, offset_weight=0.45, amp_coefficient=amp_coefficient_attn) # amp coefficient corresponding to the regression fitting
-        amp_coefficient_weight_average = 19.3
         self.weight_average = offset_weights_matmul_AV(offset_input=0.0, offset_weight=0.45, amp_coefficient=amp_coefficient_weight_average) # amp coefficient corresponding to the regression fitting 
-        self.att_score_scaler = range_scaler(shape=(1,), a_init=1/80, b_init=0.0, range_a=[1/80, 1/80], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False, mask=None) # need mask=self.mask if want to operate statistics saving (save_target_stats=True)
-        self.weight_average_scaler = range_scaler(shape=(1,), a_init=1/40, b_init=0.0, range_a=[1/40, 1/40], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False) 
+        self.att_score_scaler = range_scaler(shape=(1,), a_init=1/ssaturation_attn, b_init=0.0, range_a=[1/ssaturation_attn, 1/ssaturation_attn], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False, mask=None) # need mask=self.mask if want to operate statistics saving (save_target_stats=True)
+        self.weight_average_scaler = range_scaler(shape=(1,), a_init=1/ssaturation_weight_average, b_init=0.0, range_a=[1/ssaturation_weight_average, 1/ssaturation_weight_average], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False) 
         self.decay = decay_mask(self.mask, decay_factor=args.decay_factor)
         
         self.q_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.0, trainable_a_b=trainable_a_b, save_target_stats=save_target_stats) # To mitigate the effect of clamping between 0 and 1. Floating point is mendatory for a_init and b_init.
