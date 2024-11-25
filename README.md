@@ -1,6 +1,7 @@
 # GainCellAttention
 
 This repository contains the codes used to train the models discussed in the article :
+
 N. Leroux, P.-P. Manea, C. Sudarshan, J. Finkbeiner, S. Siegel, J. P. Strachan, and E. Neftci, Analog In-Memory Computing Attention Mechanism for Fast and Energy-Efficient Large Language Models, arXiv:2409.19315.
 https://arxiv.org/abs/2409.19315.
 
