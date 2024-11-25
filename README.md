@@ -35,15 +35,15 @@ main_gpt.py automatically saved the results on wandb.ai (use --wandb_log=True an
 python -m main_gpt ./configs/experiments/gpt-text/finetune_shakespeare.py --wandb_log=True --wandb_offline=False --batch_size=8
 
 ### run training intermediate model on OpenWebText
-Distributed run with 4 GPUs on 3000 iterations to train the intermediate gain cells model fine-tuned from gpt2: \
+Distributed run with 4 GPUs on 3000 iterations to train the intermediate gain cells model fine-tuned from gpt2:
 
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_lineardram_gpt2.py --wandb_log=True --wandb_offline=False --init_from='gpt2' --stop_saving_after=3000. --max_iters=3001 --out_dir='../saved_models/checkpoints/gpt2_LinearDRAMAttention'
 
 ### fine-tuning the final model
-After training the intermediate model, we need to change the saved model name to ../saved_models/gpt2-LinearDRAMAttention.pt. For instance: \
+After training the intermediate model, we need to change the saved model name to ../saved_models/gpt2-LinearDRAMAttention.pt. For instance:
 
 cp ../saved_models/checkpoints/gpt2_LinearDRAMAttention/ckpt.pt ../saved_models/gpt2-LinearDRAMAttention.pt
 
-Finally, we can fine-tune the intermediate model on the final gain cells model (the adaptation algorithm is operated by main_gpt.py): \
+Finally, we can fine-tune the intermediate model on the final gain cells model (the adaptation algorithm is operated by main_gpt.py):
 
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_dram_gpt2.py --wandb_log=True --wandb_offline=False --init_from='gpt2-LinearDRAMAttention' --stop_saving_after=13000. --max_iters=13001 --out_dir='../saved_models/checkpoints/gpt2_DRAMAttention'
