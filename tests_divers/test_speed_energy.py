@@ -57,7 +57,7 @@ class Attention(nn.Module):
         self.window_size = window_size
         self.register_buffer("k_cache", torch.zeros(S, block_size, H, D_h), persistent=False)
         self.register_buffer("v_cache", torch.zeros(S, block_size, H, D_h), persistent=False)
-        self.flash_attention = False
+        self.flash_attention = True
         self.kv_cache = True        
     def forward(self, t, qkv=None):
         q, k, v = qkv # (S, T, H, D_h)
