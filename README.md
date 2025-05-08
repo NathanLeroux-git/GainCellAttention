@@ -33,8 +33,8 @@ pip3 install torch torchvision torchaudio --index-url https://download.pytorch.o
 pip install -r requirements.txt
 
 ### Preparing the datasets
-python datasets/texts/shakespeare/prepare.py \
-python datasets/texts/openwebtext/prepare.py
+python dataloaders/texts/shakespeare/prepare.py \
+python dataloaders/texts/openwebtext/prepare.py
 
 ### Download and save gpt models locally
 mkdir -p ../saved_models/ \
