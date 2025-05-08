@@ -7,6 +7,7 @@ https://arxiv.org/abs/2409.19315.
 
 ## Update 06/05/2025.
 New FlashAttention Triton implementation adapted for gain cells simulations (flash_attention/flash_attn/DRAM_flash_attn_triton.py). \
+Use arguments --attention=LinearDRAMFlashAttention or --attention=DRAMFlashAttention \
 Improved main_gpt.py \
 Added utils/llms_training_utils.py and dataloaders/llms_training_loaders.py \
 New experiment to train 1.5B parameters gpt2-xl (see configs/experiments/gpt-text/train_gpt2-xl.py) \
@@ -37,7 +38,7 @@ python datasets/texts/openwebtext/prepare.py
 
 ### Download and save gpt models locally
 mkdir -p ../saved_models/ \
-utils/save_model.py --gpt2 (or --gpt2-xl)
+python utils/save_model.py --gpt2 (or --gpt2-xl)
 
 ## Training the models (total estimated time: ~4 days on 8 Nvidia H100 80 Gb GPUs, ~16 days on 8 Nvidia RTX 4090 24 Gb)
 main_gpt.py automatically saved the results on wandb.ai (use --wandb_log=True and --wandb_offline=False). The trained models are checkpointed in "../saved_models/checkpoints".

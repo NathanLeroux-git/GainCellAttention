@@ -345,7 +345,9 @@ class LinearDRAMFlashAttention(LinearDRAMAttention):
     def forward(self, x: torch.tensor, mask: torch.tensor=None):
         return super().forward(x, mask=mask)
     def attention_forward(self, q, k, v, mask):
-        B, H, T, D = q.shape   
+        B, H, T, D = q.shape
+        self.n_tiles = (T + self.array_length - 1) // self.array_length
+
         # Pre_process q, k and v      
         q = self.q_scaler(q)
         k = self.k_scaler(k)
@@ -379,8 +381,12 @@ class LinearDRAMFlashAttention(LinearDRAMAttention):
 
         x = self.bins_count_out(x)
 
+        x = x / self.n_tiles
+
         x = torch.clamp(x, self.output_clamping_bounds[0], self.output_clamping_bounds[1]) 
         x = self.quantization(x, self.apply_output_quantization, self.quantization_levels_output, self.output_clamping_bounds[0], self.output_clamping_bounds[1])
+
+        x = x * self.n_tiles
         
         x = x.transpose(1, 2) # B, H, T, D
         x = self.output_scaler(x) # B, H, T, D
