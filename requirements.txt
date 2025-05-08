@@ -4,3 +4,6 @@ tiktoken>=0.8
 pynvml>=11.5
 jsons>=1.6
 wandb>=0.18
+torcheval
+bitsandbytes
+accelerate>=0.26.0
