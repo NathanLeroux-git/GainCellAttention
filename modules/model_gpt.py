@@ -6,6 +6,8 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 2) huggingface/transformers PyTorch implementation:
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
+from math import pi
+import sys
 import numpy as np
 import math
 import inspect
@@ -17,6 +19,9 @@ from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint
 import torchaudio
 
+from flash_attention.flash_attn import flash_attn_triton, Sigmoid_flash_attn_triton, HardSigmoid_flash_attn_triton, Linear_DRAM_flash_attn_triton, DRAM_flash_attn_triton
+from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding, apply_rotary_pos_emb
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -26,13 +31,25 @@ class LayerNorm(nn.Module):
         self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
 
     def forward(self, input):
-        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)    
+
+class RopeConfig():
+    def __init__(self, args):
+        self.rope_type = 'default'
+        self.max_position_embeddings = args.block_size
+        self.rope_scaling = None
+        self.rope_theta = 10000.0
+        self.hidden_size = args.n_embd
+        self.num_attention_heads = args.n_head
 
 class CausalSelfAttention(nn.Module):
-
-    def __init__(self, args, flash=True):
+    def __init__(self, args):
         super().__init__()
         assert args.n_embd % args.n_head == 0
+
+        self.iter_num = 0
+        self.max_annealing_step = args.max_annealing_step
+
         # key, query, value projections for all heads, but in a batch
         self.c_attn = nn.Linear(args.n_embd, 3 * args.n_embd, bias=args.bias)
         # output projection
@@ -44,16 +61,26 @@ class CausalSelfAttention(nn.Module):
         self.n_head = args.n_head
         self.n_embd = args.n_embd
         self.dropout = args.dropout
-        # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
-        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention') and flash
+        # flash attention support is only in PyTorch >= 2.0
+        self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash and args.attention=="CausalSelfAttention":
             # print("WARNING: using slow attention. Flash Attention requires PyTorch >= 2.0")
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(args.block_size, args.block_size))
                                         .view(1, 1, args.block_size, args.block_size),
                                         persistent=False)
+        head_dim = self.n_embd // self.n_head
 
-    def forward(self, x: torch.tensor):
+        self.qkv_out_norm = args.qkv_out_norm
+        if args.qkv_out_norm:
+            self.q_norm, self.k_norm, self.v_norm, self.out_norm = nn.LayerNorm(head_dim), nn.LayerNorm(head_dim), nn.LayerNorm(head_dim), nn.LayerNorm(args.n_embd)
+
+        self.rope = args.rope
+        if args.rope:
+            self.LlamaRotaryEmbedding = LlamaRotaryEmbedding(config=RopeConfig(args))
+        
+
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -65,6 +92,9 @@ class CausalSelfAttention(nn.Module):
         q = q.transpose(1, 2) # (B, nh, T, hs)
         k = k.transpose(1, 2) # (B, nh, T, hs)
         v = v.transpose(1, 2) # (B, nh, T, hs)
+
+        if self.qkv_out_norm:
+            q, k, v = self.q_norm(q), self.k_norm(k), self.v_norm(v)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -84,8 +114,8 @@ class CausalSelfAttention(nn.Module):
         return y
     
 class SlidingWindowAttention(CausalSelfAttention):
-    def __init__(self, args):
-        super().__init__(args, flash=False)
+    def __init__(self, args, trainable_a_b=False):
+        super().__init__(args)
         self.attention_type = args.attention
         self.block_size = args.block_size
         # Masking
@@ -97,7 +127,7 @@ class SlidingWindowAttention(CausalSelfAttention):
         self.mask_value_2 = -np.inf
         self.similarity = torch.matmul
         self.weight_average = torch.matmul 
-        trainable_a_b = False
+        trainable_a_b = trainable_a_b
         save_target_stats = False
         self.q_scaler = range_scaler(shape=(1, args.n_head, 1, 1), trainable_a_b=trainable_a_b, save_target_stats=save_target_stats) # To mitigate the effect of clamping between 0 and 1
         self.k_scaler = range_scaler(shape=(1, args.n_head, 1, 1), trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
@@ -129,10 +159,10 @@ class SlidingWindowAttention(CausalSelfAttention):
         self.bins_count_q = BinsCount(apply_bin_count, self.quantization_levels_input)
         self.bins_count_k = BinsCount(apply_bin_count, self.quantization_levels_weights)
         self.bins_count_v = BinsCount(apply_bin_count, self.quantization_levels_weights)
-        self.bins_count_A = BinsCount(apply_bin_count, self.quantization_levels_input, mask=self.mask)
-        self.bins_count_out = BinsCount(apply_bin_count, self.quantization_levels_output) # nn.Identity()
+        self.bins_count_A = BinsCount(apply_bin_count, self.quantization_levels_input)
+        self.bins_count_out = BinsCount(apply_bin_count, self.quantization_levels_output)
 
-    def forward(self, x: torch.tensor, qkv: torch.tensor=None):
+    def forward(self, x: torch.tensor, mask: torch.tensor=None, qkv: torch.tensor=None):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -149,23 +179,33 @@ class SlidingWindowAttention(CausalSelfAttention):
             
         else:
             q, k, v = qkv
+
+        if self.rope:
+            cos, sin = self.LlamaRotaryEmbedding(q.to(torch.float32), torch.arange(0, q.shape[2]).unsqueeze(0).to(q.device).to(torch.float32))
+            q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        if self.qkv_out_norm:
+            q, k, v = self.q_norm(q), self.k_norm(k), self.v_norm(v)
             
-        # y = self.attention_forward(q, k, v)       
-        y = checkpoint(self.attention_forward, q, k, v, use_reentrant=False)
+        # y = self.attention_forward(q, k, v, mask)       
+        y = checkpoint(self.attention_forward, q, k, v, mask, use_reentrant=False)
             
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_dropout(self.c_proj(y))
+        if self.qkv_out_norm:
+            y = self.out_norm(y)
         return y
 
-    def attention_forward(self, q, k, v):
+    def attention_forward(self, q, k, v, mask):
         B, H, T, D = q.shape            
         k = k.transpose(2,3) # (n_samples, n_heads, head_dim, n_tokens)
         
         q = self.q_scaler(q)
         k = self.k_scaler(k)
         v = self.v_scaler(v)
+
         q = torch.clamp(q, self.input_clamping_bounds[0], self.input_clamping_bounds[1])
         k = torch.clamp(k, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
         v = torch.clamp(v, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
@@ -174,30 +214,28 @@ class SlidingWindowAttention(CausalSelfAttention):
         v = self.bins_count_v(self.quantization(v, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
         
         if isinstance(self.decay, nn.Identity):
-            x = self.similarity(q, k)
+            x = self.similarity(q, k)            
         else:
-            x = self.similarity(q, k, self.decay.decay_mask[:, :, :T, :T])
-        
-        x = x.masked_fill(self.mask[:, :, :T, :T] == 0, self.mask_value_1)   # masking before the read noise is important so that the noise is not computed respected to masked values
+            x = self.similarity(q, k, self.decay.decay_mask[:, :, :T, :T].to(torch.bfloat16))
+            
+        x = x.masked_fill(mask[:, :, :T, :T] == 0, self.mask_value_1)   # masking before the read noise is important so that the noise is not computed respected to masked values
         x = self.att_score_scaler(x, apply_mask=True) # (n_samples, n_heads, n_tokens, n_tokens)
         x = self.read_noise_qk(x)
-    
-        x = x.masked_fill(self.mask[:, :, :T, :T] == 0, self.mask_value_2)   # Need to mask again because self.att_score_scaler adds a scalar to all elements            
+
+        x = x.masked_fill(mask[:, :, :T, :T] == 0, self.mask_value_2)   # Need to mask again because self.att_score_scaler adds a scalar to all elements         
         x = self.NL(x)
-       
+        
         x = self.bins_count_A(x)
-        x = torch.clamp(x, self.input_clamping_bounds[0], self.input_clamping_bounds[1])        
+        x = torch.clamp(x, self.input_clamping_bounds[0], self.input_clamping_bounds[1])
         x = self.attn_dropout(x) # B, H, T, T
 
         # Padding required when sequence length not multiple of array length
         n_tiles = (T + self.array_length - 1) // self.array_length
         x = torch.cat((x, torch.zeros(B, H, T, int(n_tiles*self.array_length-T)).to(x.device)), dim=-1) # padded to the next multiple of array_length
-        v = torch.cat((v, torch.zeros(B, H, int(n_tiles*self.array_length-T), D).to(x.device)), dim=-2) # padded to the next multiple of array_length
-        
-        n_columns = x.shape[-1]
-          
+        v = torch.cat((v, torch.zeros(B, H, int(n_tiles*self.array_length-T), D).to(x.device)), dim=-2) # padded to the next multiple of array_length        
+        n_columns = x.shape[-1]          
         x = x.view(B, H, T, n_tiles, n_columns//n_tiles).transpose(2, 3) # B, H, n_tiles, T, M/n_tiles
-        v = v.view(B, H, n_tiles, n_columns//n_tiles, D) # B, H, n_tiles, T/n_tiles, D
+        v = v.view(B, H, n_tiles, n_columns//n_tiles, D) # B, H, n_tiles, M/n_tiles, D
         if isinstance(self.decay, nn.Identity):
             x = self.weight_average(x, v)
         else:
@@ -210,34 +248,43 @@ class SlidingWindowAttention(CausalSelfAttention):
         
         x = torch.clamp(x, self.output_clamping_bounds[0], self.output_clamping_bounds[1])        
         x = self.quantization(x, self.apply_output_quantization, self.quantization_levels_output, self.output_clamping_bounds[0], self.output_clamping_bounds[1])
-        
         x = torch.sum(x, dim=2) # B, H, T, D
         x = self.output_scaler(x)        
-        return x    
-    
+        return x         
+
 class LinearDRAMAttention(SlidingWindowAttention):
-    def __init__(self, args, array_len=64):
+    def __init__(self, args, trainable_a_b=True, save_target_stats=False):
         super().__init__(args)
-        trainable_a_b = True
-        save_target_stats = True
+        array_len = 64
+        self.trainable_a_b = trainable_a_b
+        self.save_target_stats = save_target_stats
         
         self.NL = nn.Identity()
         self.mask_value_1 = 0.
         self.mask_value_2 = 0.
-        amp_coefficient_attn = 1.0
-        amp_coefficient_weight_average = 1.0
-        ssaturation_attn = 1.
-        ssaturation_weight_average = 0.5
-        self.similarity = offset_weights_matmul_QK(offset_input=0.0, offset_weight=0.45, amp_coefficient=amp_coefficient_attn) # amp coefficient corresponding to the regression fitting
+        self.amp_coefficient_attn = 19.3
+        amp_coefficient_weight_average = 19.3        
+        self.ssaturation_attn = 80.
+        ssaturation_weight_average = 40.
+
+        self.similarity = offset_weights_matmul_QK(offset_input=0.0, offset_weight=0.45, amp_coefficient=self.amp_coefficient_attn) # amp coefficient corresponding to the regression fitting
         self.weight_average = offset_weights_matmul_AV(offset_input=0.0, offset_weight=0.45, amp_coefficient=amp_coefficient_weight_average) # amp coefficient corresponding to the regression fitting 
-        self.att_score_scaler = range_scaler(shape=(1,), a_init=1/ssaturation_attn, b_init=0.0, range_a=[1/ssaturation_attn, 1/ssaturation_attn], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False, mask=None) # need mask=self.mask if want to operate statistics saving (save_target_stats=True)
+
+        self.att_score_scaler = range_scaler(shape=(1,), a_init=1/self.ssaturation_attn, b_init=0.0, range_a=[1/self.ssaturation_attn, 1/self.ssaturation_attn], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False, mask=None) # need mask=self.mask if want to operate statistics saving (save_target_stats=True)
         self.weight_average_scaler = range_scaler(shape=(1,), a_init=1/ssaturation_weight_average, b_init=0.0, range_a=[1/ssaturation_weight_average, 1/ssaturation_weight_average], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False) 
         self.decay = decay_mask(self.mask, decay_factor=args.decay_factor)
         
-        self.q_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.0, trainable_a_b=trainable_a_b, save_target_stats=save_target_stats) # To mitigate the effect of clamping between 0 and 1. Floating point is mendatory for a_init and b_init.
-        self.k_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.45, trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
-        self.v_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.45, trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)              
-        self.output_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0., trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
+        # ### OLD: no assumption scaling
+        self.q_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.0, trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats) # To mitigate the effect of clamping between 0 and 1. Floating point is mendatory for a_init and b_init.
+        self.k_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.45, trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats)
+        self.v_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.45, trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats)
+        
+        ### NEW: with RMSNorm, the std is ~1. To force ~95% of Gaussian distribution inside bounds, we can start with 1/4 of clipping bound (equivalent to 2 sigma), and centered distribution.
+        # self.q_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1/4, b_init=0.5, trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats) # To mitigate the effect of clamping between 0 and 1. Floating point is mendatory for a_init and b_init.
+        # self.k_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1/4*0.9, b_init=0.45, trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats)
+        # self.v_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1/4*0.9, b_init=0.45, trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats)
+        
+        self.output_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0., trainable_a_b=self.trainable_a_b, save_target_stats=self.save_target_stats)
         
         self.input_clamping_bounds = [0.0, 1.0]
         self.weights_clamping_bounds = [0., 0.9]
@@ -245,11 +292,240 @@ class LinearDRAMAttention(SlidingWindowAttention):
 
         self.read_noise_qk = nn.Identity()
         self.read_noise_Wv = nn.Identity()
-
-        self.array_length = array_len
+        self.array_length = array_len        
     
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
+        return super().forward(x, mask=mask)
+    
+class HardSigmoidFlashAttention(SlidingWindowAttention):
+    def __init__(self, args):
+        super().__init__(args)
+        assert args.triton
+        self.scaled_dot_product_attention = HardSigmoid_flash_attn_triton.FlashAttnFunc.apply
+        self.dot_product_scale = (self.n_embd // self.n_head)**-0.5
+        self.bias = None
+        self.causal = True
+        self.array_length = args.block_size
+        assert args.dropout==0. # not implemented
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
+        return super().forward(x, mask=mask)
+    
+    def attention_forward(self, q, k, v, mask):
+        B, H, T, D = q.shape
+        q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)        
+        q, k , v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2) # B, T, H, D (FlashAttention requires this shape)
+        
+        x =  self.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                self.bias,
+                self.causal, 
+                self.dot_product_scale,
+            )
+
+        x = x.transpose(1, 2) # B, H, T, D
+        return x
+    
+class SigmoidFlashAttention(HardSigmoidFlashAttention):
+    def __init__(self, args):
+        super().__init__(args)
+        self.scaled_dot_product_attention = Sigmoid_flash_attn_triton.FlashAttnFunc.apply
+    def forward(self, x, mask = None):
+        return super().forward(x, mask)
+
+class LinearDRAMFlashAttention(LinearDRAMAttention):
+    def __init__(self, args):
+        super().__init__(args, trainable_a_b=True, save_target_stats=False)
+        self.scaled_dot_product_attention = Linear_DRAM_flash_attn_triton.FlashAttnFunc.apply if args.triton else self.attention_torch
+        self.bias = None
+        self.causal = True
+        self.decay_factor = args.decay_factor
+        assert args.dropout==0. # not implemented
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
+        return super().forward(x, mask=mask)
+    def attention_forward(self, q, k, v, mask):
+        B, H, T, D = q.shape
+        self.n_tiles = (T + self.array_length - 1) // self.array_length
+
+        # Pre_process q, k and v      
+        q = self.q_scaler(q)
+        k = self.k_scaler(k)
+        v = self.v_scaler(v)        
+        
+        q = torch.clamp(q, self.input_clamping_bounds[0], self.input_clamping_bounds[1])
+        k = torch.clamp(k, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
+        v = torch.clamp(v, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
+        q = self.bins_count_q(self.quantization(q, self.apply_input_quantization, self.quantization_levels_input, self.input_clamping_bounds[0], self.input_clamping_bounds[1]))
+        k = self.bins_count_k(self.quantization(k, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
+        v = self.bins_count_v(self.quantization(v, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
+        
+        q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
+        
+        # Convert capacitor charge to weights
+        k = k - 0.45
+        v = v - 0.45
+        
+        q, k , v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2) # B, T, H, D (FlashAttention requires this shape)
+        
+        x =  self.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                self.bias,
+                self.causal, 
+                self.amp_coefficient_attn,
+                self.ssaturation_attn,
+                self.decay_factor,
+            )
+
+        x = self.bins_count_out(x)
+
+        x = x / self.n_tiles
+
+        x = torch.clamp(x, self.output_clamping_bounds[0], self.output_clamping_bounds[1]) 
+        x = self.quantization(x, self.apply_output_quantization, self.quantization_levels_output, self.output_clamping_bounds[0], self.output_clamping_bounds[1])
+
+        x = x * self.n_tiles
+        
+        x = x.transpose(1, 2) # B, H, T, D
+        x = self.output_scaler(x) # B, H, T, D
+        return x
+    
+    def attention_torch(self, q, k, v, bias, causal, amp_coefficient_attn, ssat, decay_factor):
+        dot_product_scale = amp_coefficient_attn / ssat
+        B, T, H, D = q.shape
+        q, k, v = q.transpose(1,2), k.transpose(1,2), v.transpose(1,2) # B, H, T, D
+        # causal_mask = torch.tril(torch.ones(T, T)).view(1, 1, T, T).to(q.device)
+        decay = self.decay.decay_mask[:, :, :T, :T].to(torch.bfloat16)
+        x = (q @ k.transpose(2, 3)) * decay  * dot_product_scale
+        x = x.masked_fill(self.mask[:, :, :T, :T] == 0, 0.)
+        x = torch.clamp(x, self.input_clamping_bounds[0], self.input_clamping_bounds[1])
+        x = (x * decay) @ v * 2 * dot_product_scale # B, H, T, D
+        return x.transpose(1, 2) # B, T, H, D
+        
+class DRAMFlashAttention(LinearDRAMFlashAttention):
+    def __init__(self, args):
+        super().__init__(args)
+        assert args.triton
+        self.scaled_dot_product_attention = DRAM_flash_attn_triton.FlashAttnFunc.apply
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
+        return super().forward(x, mask=mask)
+    
+class FlashAttentionTriton(SlidingWindowAttention):
+    def __init__(self, args):
+        super().__init__(args)
+        self.flash_attention_triton = flash_attn_triton.FlashAttnFunc.apply
+        self.bias = None
+        self.causal = True
+        self.dot_product_scale = (self.n_embd // self.n_head)**-0.5
+    def forward(self, x):
+        return super().forward(x)
+    
+    def attention_forward(self, q, k, v):
+        B, H, T, D = q.shape   
+        # Pre_process q, k and v      
+        q = self.q_scaler(q)
+        k = self.k_scaler(k)
+        v = self.v_scaler(v)        
+        
+        q = torch.clamp(q, self.input_clamping_bounds[0], self.input_clamping_bounds[1])
+        k = torch.clamp(k, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
+        v = torch.clamp(v, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
+        q = self.bins_count_q(self.quantization(q, self.apply_input_quantization, self.quantization_levels_input, self.input_clamping_bounds[0], self.input_clamping_bounds[1]))
+        k = self.bins_count_k(self.quantization(k, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
+        v = self.bins_count_v(self.quantization(v, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
+        
+        q, k , v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2) # B, T, H, D (FlashAttention requires this shape)
+        
+        q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
+        
+        x = self.flash_attention_triton(
+                q,
+                k,
+                v,
+                self.bias,
+                self.causal, 
+                self.dot_product_scale,
+            )
+        x = self.bins_count_out(x)  
+        x = torch.clamp(x, self.output_clamping_bounds[0], self.output_clamping_bounds[1]) 
+        x = self.quantization(x, self.apply_output_quantization, self.quantization_levels_output, self.output_clamping_bounds[0], self.output_clamping_bounds[1])
+        
+        x = x.transpose(1, 2) # B, H, T, D
+        x = self.output_scaler(x) # B, H, T, D
+        return x  
+    
+class LinearDRAMAttentionCustomAutograd(LinearDRAMAttention):
+    def __init__(self, args):
+        super().__init__(args)
+        self.bias = None
+        self.causal = True
+        self.dot_product_scale = self.amp_coefficient_attn / self.ssaturation_attn
+        self.decay.decay_mask = self.decay.decay_mask * self.mask
+        self.custom_autograd_linear_dram_attention = CustomAutogradLinearDramAttention.apply
+        
     def forward(self, x: torch.tensor):
         return super().forward(x)
+    def attention_forward(self, q, k, v):
+        B, H, T, D = q.shape   
+        # Pre_process q, k and v      
+        q = self.q_scaler(q)
+        k = self.k_scaler(k)
+        v = self.v_scaler(v)        
+        
+        q = torch.clamp(q, self.input_clamping_bounds[0], self.input_clamping_bounds[1])
+        k = torch.clamp(k, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
+        v = torch.clamp(v, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1])
+        q = self.bins_count_q(self.quantization(q, self.apply_input_quantization, self.quantization_levels_input, self.input_clamping_bounds[0], self.input_clamping_bounds[1]))
+        k = self.bins_count_k(self.quantization(k, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
+        v = self.bins_count_v(self.quantization(v, self.apply_weights_quantization, self.quantization_levels_weights, self.weights_clamping_bounds[0], self.weights_clamping_bounds[1]))
+        
+        q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
+        
+        # Convert capacitor charge to weights
+        
+        k = k - 0.45
+        v = v - 0.45
+        
+        x = self.custom_autograd_linear_dram_attention(
+                q,
+                k,
+                v,
+                self.mask,
+                self.dot_product_scale,
+            )
+        x = self.bins_count_out(x)  
+        x = torch.clamp(x, self.output_clamping_bounds[0], self.output_clamping_bounds[1]) 
+        x = self.quantization(x, self.apply_output_quantization, self.quantization_levels_output, self.output_clamping_bounds[0], self.output_clamping_bounds[1])
+        
+        x = self.output_scaler(x) # B, H, T, D
+        return x 
+    
+class CustomAutogradLinearDramAttention(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, q, k, v, mask, scale):
+        ctx.mask = mask
+        ctx.scale = scale
+        B, H, T, D = q.shape
+        x = q @ k.transpose(2, 3) * scale
+        x = x.masked_fill(mask[:, :, :T, :T] == 0, 0.)        
+        x = x.masked_fill(x < 0., 0.)
+        x = x.masked_fill(x > 1., 1.)
+        ctx.save_for_backward(q, k, v, x)
+        x = x @ v * 2 * scale
+        return x
+    @staticmethod
+    def backward(ctx, grad_outputs):        
+        q, k, v, attention_scores, = ctx.saved_tensors
+        B, H, T, D = q.shape
+        grad_v = attention_scores.transpose(2, 3) @ grad_outputs * 2 * ctx.scale
+        grad_attention_scores = grad_outputs @ v.transpose(2, 3) * 2 * ctx.scale
+        grad_attention_scores = grad_attention_scores * (ctx.mask[:, :, :T, :T] != 0).float()
+        grad_attention_scores = grad_attention_scores * (attention_scores>0.) * (attention_scores<1.)
+        grad_k = grad_attention_scores.transpose(2, 3) @ q * ctx.scale
+        grad_q = grad_attention_scores @ k * ctx.scale
+        return grad_q, grad_k, grad_v, None, None  
     
 class decay_mask(nn.Module):
     def __init__(self, mask: torch.tensor, decay_factor: float):
@@ -300,8 +576,9 @@ class offset_weights_matmul_AV(nn.Module):
 #         return x
     
 class DRAMAttention(SlidingWindowAttention):
-    def __init__(self, args, array_len=64):
+    def __init__(self, args):
         super().__init__(args)
+        array_len=64
         # Masking (same as SlidingWindowAttention)
         # mask = WindowMaskGeneration(n_tokens=args.block_size, n_memory=args.block_size, chunk_size=args.sliding_window_size).view(1, 1, args.block_size, args.block_size)        
         # Circuits constrains
@@ -317,9 +594,9 @@ class DRAMAttention(SlidingWindowAttention):
         # self.weight_average = DRAM_MAC_temporal_encoding()
 
         trainable_a_b = True
-        save_target_stats=False
+        save_target_stats = False
         
-        nonlinear_amp = 19.3 # Linear fit coefficient from DRAM temporal encoding
+        # nonlinear_amp = 19.3 # Linear fit coefficient from DRAM temporal encoding
         
         self.q_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.0, trainable_a_b=trainable_a_b, save_target_stats=save_target_stats) # To mitigate the effect of clamping between 0 and 1
         self.k_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0.45, trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
@@ -327,7 +604,8 @@ class DRAMAttention(SlidingWindowAttention):
         # self.att_score_scaler = range_scaler(shape=(1,), a_init=1/80, b_init=0.0, range_a=[1/80, 1/80], range_b=[0., 0.], trainable_a_b=False, save_target_stats=save_target_stats, mask=self.mask)
         self.att_score_scaler = range_scaler(shape=(1,), a_init=1/80, b_init=0.0, range_a=[1/80, 1/80], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False, mask=None) # need mask=self.mask if want to operate statistics saving (or save_target_stats=True)
         self.weight_average_scaler = range_scaler(shape=(1,), a_init=1/40, b_init=0.0, range_a=[1/40, 1/40], range_b=[0., 0.], trainable_a_b=False, save_target_stats=False) 
-        self.output_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1 / nonlinear_amp, b_init=0., trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
+        # self.output_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1 / nonlinear_amp, b_init=0., trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
+        self.output_scaler = range_scaler(shape=(1, args.n_head, 1, 1), a_init=1., b_init=0., trainable_a_b=trainable_a_b, save_target_stats=save_target_stats)
         self.input_clamping_bounds = [0.0, 1.0]
         self.weights_clamping_bounds = [0., 0.9]
         self.output_clamping_bounds = [-1., 1.0]
@@ -337,8 +615,8 @@ class DRAMAttention(SlidingWindowAttention):
         self.decay = decay_mask(self.mask, decay_factor=args.decay_factor)
         self.array_length = array_len
 
-    def forward(self, x: torch.tensor):
-        return super().forward(x)
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
+        return super().forward(x, mask=mask)
     
 class NLAttention_x3(DRAMAttention):
     def __init__(self, args, array_len=64):
@@ -372,20 +650,21 @@ class NLAttention_exponential(NLAttention_x3):
         return super().forward(x)
     
 def WindowMaskGeneration(n_tokens: int, n_memory: int, chunk_size: int):
-    mask = torch.zeros(n_tokens, n_memory)
+    mask = torch.zeros(n_tokens, n_memory, dtype=torch.int)
     for i in range(n_tokens):
         if i<chunk_size:
-            mask[i, :i+1] = 1.
+            mask[i, :i+1] = 1
         else:
-            mask[i, i-chunk_size+1:i+1] = 1.
+            mask[i, i-chunk_size+1:i+1] = 1
     return mask
     
 class range_scaler(nn.Module):
     def __init__(self, shape, a_init=1., b_init=0., save_target_stats=False, trainable_a_b=False, range_a=[1e-20, np.inf], range_b=[-np.inf, np.inf], mask=None):
         super().__init__()    
-        self.range_a, self.range_b = range_a, range_b   
+        self.range_a, self.range_b = range_a, range_b           
         self.register_parameter('a', nn.Parameter(torch.ones(shape)*a_init, requires_grad=trainable_a_b))
-        self.register_parameter('b',  nn.Parameter(torch.ones(shape)*b_init, requires_grad=trainable_a_b))
+        self.register_parameter('b', nn.Parameter(torch.ones(shape)*b_init, requires_grad=trainable_a_b))
+
         self.alpha = 0.1
         self.register_buffer('std_after_scale', torch.ones(shape), persistent=False) # with persistent=False, the parameter won't be transmitted from a model to another
         self.register_buffer('mean_after_scale', torch.zeros(shape), persistent=False)
@@ -395,9 +674,6 @@ class range_scaler(nn.Module):
         self.save_target_stats = save_target_stats
         if mask is not None:
             self.register_buffer("mask", mask)
-            
-        # ### TEST
-        # self.register_buffer("output", torch.tensor([0.]), persistent=False)
 
     def forward(self, x, apply_mask=False):
         a_, b_ = torch.clamp(self.a, min=self.range_a[0], max=self.range_a[1]), torch.clamp(self.b, min=self.range_b[0], max=self.range_b[1])        
@@ -503,7 +779,7 @@ class DRAM_MAC_temporal_encoding(nn.Module):
     def __init__(self):
         super().__init__()
     
-    def forward(self, x, y, QV_mul, decay_mask):
+    def forward(self, x, y, QK_mul, decay_mask):
         c = [0.17393044,  0.15653739,  0.14088365,  0.12679529,  5.51975209,  4.96777688,  4.4709992,  -1.44776001, -1.30298401, 46.05483778]
         max_order = int((2 * len(c))**0.5 - 1)
         x_max = 0.9
@@ -512,7 +788,7 @@ class DRAM_MAC_temporal_encoding(nn.Module):
         idx = 0 
         for i in range(max_order+1):
             for j in range(max_order - i + 1):
-                if QV_mul:
+                if QK_mul:
                     if idx == 0:
                         basis_sum = torch.matmul(x, y.pow(i)*x_max**j*c[idx]) * decay_mask
                     else:
@@ -531,17 +807,18 @@ class DRAM_MAC_temporal_encoding_surrogate_QK(torch.autograd.Function):
         ctx.save_for_backward(x, y, decay_mask)
         c = [0.17393044,  0.15653739,  0.14088365,  0.12679529,  5.51975209,  4.96777688,  4.4709992,  -1.44776001, -1.30298401, 46.05483778]
         max_order = int((2 * len(c))**0.5 - 1)
+
         x_max = 0.9
         offset = 0.45
         y = y - offset
+        
+        basis_sum = 0.
         idx = 0 
         for i in range(max_order+1):
+            tmp = torch.matmul(x, y.pow(i)) * decay_mask.pow(i)
             for j in range(max_order - i + 1):
-                if idx == 0:
-                    basis_sum = torch.matmul(x, y.pow(i)*x_max**j*c[idx]) * decay_mask.pow(i)
-                else:
-                    basis_sum.add_(torch.matmul(x, y.pow(i)*x_max**j*c[idx]) * decay_mask.pow(i))
-                idx += 1     
+                basis_sum += tmp * x_max ** j * c[idx]
+                idx += 1
         return basis_sum
     
     @staticmethod
@@ -560,17 +837,18 @@ class DRAM_MAC_temporal_encoding_surrogate_AV(torch.autograd.Function):
         ctx.save_for_backward(x, y, decay_mask)
         c = [0.17393044,  0.15653739,  0.14088365,  0.12679529,  5.51975209,  4.96777688,  4.4709992,  -1.44776001, -1.30298401, 46.05483778]
         max_order = int((2 * len(c))**0.5 - 1)
+
         x_max = 0.9
         offset = 0.45
         y = y - offset
+        
+        basis_sum = 0.
         idx = 0 
         for i in range(max_order+1):
+            tmp = torch.matmul(x * decay_mask.pow(i), y.pow(i))
             for j in range(max_order - i + 1):
-                if idx == 0:
-                    basis_sum = torch.matmul(x * decay_mask.pow(i), y.pow(i)*x_max**j*c[idx])
-                else:
-                    basis_sum.add_(torch.matmul(x * decay_mask.pow(i), y.pow(i)*x_max**j*c[idx]))
-                idx += 1     
+                basis_sum += tmp * x_max ** j * c[idx]
+                idx += 1        
         return basis_sum
     
     @staticmethod
@@ -725,10 +1003,17 @@ class Block(nn.Module):
         self.attn = getattr(__import__(__name__).model_gpt, config.attention)(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
+        self.LayerScale = config.LayerScale
+        if self.LayerScale:
+            self.scale_attn = nn.Parameter(torch.tensor(1.))
+            self.scale_mlp = nn.Parameter(torch.tensor(1.))
+        else:
+            self.scale_attn = 1.
+            self.scale_mlp = 1.
 
-    def forward(self, x: torch.tensor):
-        x = x + self.attn(self.ln_1(x))
-        x = x + self.mlp(self.ln_2(x))
+    def forward(self, x: torch.tensor, mask: torch.tensor=None):
+        x = x + self.scale_attn * self.attn(self.ln_1(x), mask=mask)
+        x = x + self.scale_mlp * self.mlp(self.ln_2(x))
         return x
     
 def remove_state_dict_prefix(state_dict, prefix='_orig_mod.'):
@@ -742,7 +1027,7 @@ def remove_state_dict_prefix(state_dict, prefix='_orig_mod.'):
 @dataclass
 class GPTConfig:
     block_size: int = 1024
-    vocab_size: int = 50304 # GPT-2 vocab_size of 50257, padded up to nearest multiple of 64 for efficiency
+    vocab_size: int = 50257
     n_layer: int = 12
     n_head: int = 12
     n_embd: int = 768
@@ -755,6 +1040,12 @@ class GPTConfig:
     decay_factor: float = 0.
     sliding_window_size: int = 1024
     batch_size: int = 32
+    triton: bool = True
+    iter_num: int = 0
+    max_annealing_step: int = 1000
+    qkv_out_norm: bool = False
+    rope: bool = False
+    LayerScale: bool = False
 
 class GPT(nn.Module):
 
@@ -763,6 +1054,8 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
+        
+        self.register_buffer('mask', WindowMaskGeneration(n_tokens=config.block_size, n_memory=config.block_size, chunk_size=config.sliding_window_size).view(1, 1, config.block_size, config.block_size), persistent=False) 
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -788,6 +1081,8 @@ class GPT(nn.Module):
         # report number of parameters
         print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
+        self.device = None
+
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
@@ -810,6 +1105,10 @@ class GPT(nn.Module):
 
     def forward(self, idx: torch.tensor, targets: torch.tensor=None):
         device = idx.device
+        self.device = device
+
+        torch.cuda.set_device(device)
+
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
         pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
@@ -819,8 +1118,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for b, block in enumerate(self.transformer.h):
-            x = block(x)
-            # print(b, torch.isnan(x).sum())
+            x = block(x, mask=self.mask)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -847,8 +1145,8 @@ class GPT(nn.Module):
 
     @classmethod
     def from_pretrained(cls, model_type, override_args=None):
-        huggingface_models = ['gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl']
-        local_models = ['gpt2-from-scratch', 'gpt2-LinearDRAMAttention', 'gpt2-xl-LinearDRAMAttention', 'gpt2-DRAMAttention']
+        huggingface_models = ['gpt2-medium', 'gpt2-large']
+        local_models = ['gpt2', 'gpt2-from-scratch', 'gpt2-xl', 'gpt2-LinearDRAMAttention', 'gpt2-xl-LinearDRAMAttention', 'gpt2-DRAMAttention']
         assert model_type in huggingface_models + local_models
         override_args = override_args or {} # default to empty dict
         # only dropout can be overridden see more notes below
@@ -899,6 +1197,7 @@ class GPT(nn.Module):
             transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
             # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
             # this means that we have to transpose these weights when we import them
+            assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
             for k in sd_keys_hf:
                 if any(k.endswith(w) for w in transposed) and (model_type in huggingface_models):
                     # special treatment for the Conv1D weights we need to transpose

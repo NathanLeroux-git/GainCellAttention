@@ -12,7 +12,8 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "args" : [
-                "configs/experiments/gpt-text/finetune_shakespeare.py"
+                // "configs/experiments/gpt-text/finetune_shakespeare.py"
+                "--gpt2"
             ],
             "purpose": ["debug-in-terminal"]
         }
