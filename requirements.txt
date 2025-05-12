@@ -7,3 +7,4 @@ wandb>=0.18
 torcheval
 bitsandbytes
 accelerate>=0.26.0
+lm-eval
