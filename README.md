@@ -59,3 +59,7 @@ cp ../saved_models/checkpoints/gpt2_LinearDRAMAttention/ckpt.pt ../saved_models/
 Finally, we can fine-tune the intermediate model on the final gain cells model (the adaptation algorithm is operated by main_gpt.py):
 
 python -m torch.distributed.run --nproc_per_node 4 main_gpt.py ./configs/experiments/gpt-text/ft_dram_gpt2.py --wandb_log=True --wandb_offline=False --init_from='gpt2-LinearDRAMAttention' --stop_saving_after=13000. --max_iters=13001 --out_dir='../saved_models/checkpoints/gpt2_DRAMAttention'
+
+### evaluation
+
+Evaluation scripts and instructions can be found in the `evaluation` folder.
