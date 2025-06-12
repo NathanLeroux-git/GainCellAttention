@@ -1,7 +1,7 @@
 # # GPT-2
 # for model_type in "openai-community/gpt2" "dram-1_gpt2_public" "dram-2_gpt2-from-scratch" "dram-3_gpt2-LinearDRAMAttention" "dram-4_gpt2-DRAMAttention_adapted_from_LinearDRAMAttention_no_fine-tuning" "dram-5_gpt2-DRAMAttention_adapted_from_LinearDRAMAttention+fine-tuning"
 # GPT-2 XL
-for model_type in "dram-gpt2-xl-DRAMAttention" # "openai-community/gpt2-xl" # "dram-gpt2-xl-LinearDRAMAttention"
+for model_type in "openai-community/gpt2-xl" "dram-gpt2-xl-LinearDRAMAttention" "dram-gpt2-xl-DRAMAttention"
 do
     echo
     echo "Running model: $model_type"
