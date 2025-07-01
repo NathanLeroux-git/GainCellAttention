@@ -5,6 +5,8 @@ import os
 
 if os.path.exists('../datasets/texts/'):
     data_dir = '../datasets/texts/'
+elif os.path.exists('/p/project1/neuroml/common/datasets'):
+    data_dir = '/p/project1/neuroml/common/datasets'
 else:
     print("Data directory not found. Exiting...")
     sys.exit(1)
@@ -21,9 +23,9 @@ log_interval = 1,
 eval_iters = 200,
 eval_only = False, # if True, script exits right after the first eval
 always_save_checkpoint = True, # if True, always save a checkpoint after each eval
-stop_saving_after = float('inf'),
+stop_saving_after = int(1e10),# float('inf'),
 init_from = 'scratch', # 'scratch' or 'resume', or 'hf' or 'gpt2*'
-model_type = 'gpt2',
+model_type = 'HuggingFaceTB/SmolLM-135M',
 calibrate = False,
 # wandb logging
 wandb_log = False, # disabled by default
@@ -34,7 +36,7 @@ wandb_group_name = 'tests',
 wandb_run_id = '',
 # data
 dataset = 'openwebtext',
-tokenizer = None, # None if using pre-tokenized data, else 'gpt2', etc.
+tokenizer = None, # None if using pre-tokenized data, else 'gpt2', 'HuggingFaceTB/SmolLM-135M', etc.
 data_dir = '../datasets/texts/' if os.path.exists('../datasets/texts/') else '/p/project1/neuroml/common/datasets',
 gradient_accumulation_steps = 5 * 8, # used to simulate larger batch sizes
 batch_size = 12, # if gradient_accumulation_steps > 1, this is the micro-batch size
@@ -79,7 +81,6 @@ dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported
 compile = True, # use PyTorch 2.0 to compile the model to be faster
 )
 # -----------------------------------------------------------------------------
-override_config = {}
 def return_config():
     for arg in sys.argv[1:]:
         if '=' not in arg:
@@ -87,12 +88,8 @@ def return_config():
             assert not arg.startswith('--')
             config_file = arg
             print(f"Overriding config with {config_file}:")
-            # with open(config_file) as f:
-            #     print(f.read())
-            exec(open(config_file).read(), globals())
-            for key, val in override_config.items():
-                assert key in config
-                config.update({key: val})
+            exec(open(config_file).read(), config)
+            config.pop('__builtins__', None)
                 
         else:
             # assume it's a --key=value argument
