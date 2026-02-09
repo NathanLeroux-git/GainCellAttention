@@ -2,8 +2,7 @@
 
 This repository contains the codes used to train the models discussed in the article :
 
-N. Leroux, P.-P. Manea, C. Sudarshan, J. Finkbeiner, S. Siegel, J. P. Strachan, and E. Neftci, Analog In-Memory Computing Attention Mechanism for Fast and Energy-Efficient Large Language Models, arXiv:2409.19315.
-https://arxiv.org/abs/2409.19315.
+N. Leroux, P.-P. Manea, C. Sudarshan, J. Finkbeiner, S. Siegel, J. P. Strachan, and E. Neftci, Analog In-Memory Computing Attention Mechanism for Fast and Energy-Efficient Large Language Models, Nature Computational Science 5, 813–824 (2025) https://doi.org/10.1038/s43588-025-00854-1.
 
 ## Update 06/05/2025.
 New FlashAttention Triton implementation adapted for gain cells simulations (flash_attention/flash_attn/DRAM_flash_attn_triton.py). \
