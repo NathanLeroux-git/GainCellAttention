@@ -2,9 +2,13 @@ import os
 import requests
 import tiktoken
 import numpy as np
+from pathlib import Path
 
 # download the tiny shakespeare dataset
-input_file_path = os.path.join(os.path.dirname(__file__), 'input.txt')
+dirname =  Path(os.environ.get('DATA_HOME', os.environ['HOME'])) / 'datasets' / 'texts' / 'shakespeare'
+dirname.mkdir(parents=True, exist_ok=True)
+
+input_file_path = dirname / 'input.txt'
 if not os.path.exists(input_file_path):
     data_url = 'https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt'
     with open(input_file_path, 'w') as f:
@@ -26,8 +30,8 @@ print(f"val has {len(val_ids):,} tokens")
 # export to bin files
 train_ids = np.array(train_ids, dtype=np.uint16)
 val_ids = np.array(val_ids, dtype=np.uint16)
-train_ids.tofile(os.path.join(os.path.dirname(__file__), 'train.bin'))
-val_ids.tofile(os.path.join(os.path.dirname(__file__), 'val.bin'))
+train_ids.tofile(dirname / 'train.bin')
+val_ids.tofile(dirname / 'val.bin')
 
 # train.bin has 301,966 tokens
 # val.bin has 36,059 tokens

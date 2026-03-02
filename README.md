@@ -26,6 +26,8 @@ git clone https://github.com/NathanLeroux-git/GainCellAttention.git \
 cd GainCellAttention/ \
 source ../venv/gpt2/bin/activate
 
+export DATA_HOME='yourdatasetdir'
+
 ### Install Pytorch (done with torch 2.2.2, need to adapt cuda version depending on system)
 pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 
