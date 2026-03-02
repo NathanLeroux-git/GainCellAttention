@@ -40,4 +40,3 @@ config = GPTConfig(**config_args)
 model = GPT(config)
 model.load_state_dict(model_ld, strict=False)
 model.to(device)
-pass

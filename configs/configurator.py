@@ -2,14 +2,9 @@ import sys
 from ast import literal_eval
 import torch
 import os
+from pathlib import Path
 
-if os.path.exists('../datasets/texts/'):
-    data_dir = '../datasets/texts/'
-elif os.path.exists('/p/project1/neuroml/common/datasets'):
-    data_dir = '/p/project1/neuroml/common/datasets'
-else:
-    print("Data directory not found. Exiting...")
-    sys.exit(1)
+dataset_dir = Path(os.environ.get('DATA_HOME', os.environ['HOME'])) / 'datasets' / 'texts'
 
 config = dict(
 nproc_per_node = 4,
@@ -37,7 +32,7 @@ wandb_run_id = '',
 # data
 dataset = 'openwebtext',
 tokenizer = None, # None if using pre-tokenized data, else 'gpt2', 'HuggingFaceTB/SmolLM-135M', etc.
-data_dir = '../datasets/texts/' if os.path.exists('../datasets/texts/') else '/p/project1/neuroml/common/datasets',
+data_dir = str(dataset_dir),
 gradient_accumulation_steps = 5 * 8, # used to simulate larger batch sizes
 batch_size = 12, # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024,
