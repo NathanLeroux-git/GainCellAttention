@@ -7,7 +7,8 @@ https://github.com/openai/gpt-2/blob/master/src/model.py
 https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
 """
 from math import pi
-import sys
+import sys, os
+from pathlib import Path
 import numpy as np
 import math
 import inspect
@@ -21,6 +22,8 @@ import torchaudio
 
 from flash_attention.flash_attn import flash_attn_triton, Sigmoid_flash_attn_triton, HardSigmoid_flash_attn_triton, Linear_DRAM_flash_attn_triton, DRAM_flash_attn_triton
 from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding, apply_rotary_pos_emb
+
+model_dir = Path(os.environ.get('DATA_HOME', os.environ['HOME'])) / 'saved_models'
 
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
@@ -1210,7 +1213,7 @@ class GPT(nn.Module):
                     with torch.no_grad():
                         sd[k].copy_(sd_hf[k])
         else:
-            model_hf = torch.load(f"../saved_models/{model_type}.pt", map_location='cpu')
+            model_hf = torch.load(model_dir / f"{model_type}.pt", map_location='cpu')
             sd_hf = model_hf['model']
             # [sd_hf.update({k: torch.tensor(0)}) for k in sd_hf if k.endswith('.iter_num')] # We want to reinitialize this parameter
             with torch.no_grad():
