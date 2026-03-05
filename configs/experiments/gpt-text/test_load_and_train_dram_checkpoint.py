@@ -1,3 +1,5 @@
+eval_only = True
+
 out_dir = '../saved_models/checkpoints/gpt2_DRAMAttention'
 wandb_log = False
 wandb_offline = True
@@ -6,7 +8,7 @@ wandb_group_name = 'owt_training'
 wandb_run_name = 'gpt2_DRAMAttention'
 
 init_from = 'gpt2-LinearDRAMAttention'
-attention = 'DRAMAttention'
+attention = 'LinearDRAMAttention'
 
 quantization_levels_input=16
 quantization_levels_weights=8
@@ -29,7 +31,7 @@ lr_decay_iters = 600000
 
 # eval stuff
 eval_interval = 100
-eval_iters = 100
+eval_iters = 1000
 log_interval = 1
 
 # weight decay
