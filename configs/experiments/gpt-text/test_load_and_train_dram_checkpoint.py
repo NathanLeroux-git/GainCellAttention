@@ -1,3 +1,5 @@
+eval_only = True
+
 out_dir = '../saved_models/checkpoints/gpt2_DRAMAttention'
 wandb_log = False
 wandb_offline = True
